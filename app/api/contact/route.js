@@ -1,29 +1,22 @@
-﻿// app/api/contact/route.js
-import sgMail from "@sendgrid/mail";
+﻿import sgMail from "@sendgrid/mail";
 
-sgMail.setApiKey(process.env.SENDGRID_API_KEY || "");
+sgMail.setApiKey(process.env.SENDGRID_API_KEY);
 
 export async function POST(req) {
   try {
-    // Ensure server got env vars
-    const SG_KEY = process.env.SENDGRID_API_KEY;
-    const TO_EMAIL = process.env.TO_EMAIL;
-    const FROM_EMAIL = process.env.FROM_EMAIL;
-
-    if (!SG_KEY) {
-      console.error("Missing SENDGRID_API_KEY");
-      return new Response(JSON.stringify({ error: "Missing SENDGRID_API_KEY" }), { status: 500 });
-    }
-    if (!TO_EMAIL) {
-      console.error("Missing TO_EMAIL");
-      return new Response(JSON.stringify({ error: "Missing TO_EMAIL" }), { status: 500 });
-    }
-    if (!FROM_EMAIL) {
-      console.error("Missing FROM_EMAIL");
-      return new Response(JSON.stringify({ error: "Missing FROM_EMAIL" }), { status: 500 });
+    // Early checks
+    const missing = [];
+    if (!process.env.SENDGRID_API_KEY) missing.push("SENDGRID_API_KEY");
+    if (!process.env.TO_EMAIL) missing.push("TO_EMAIL");
+    if (!process.env.FROM_EMAIL) missing.push("FROM_EMAIL");
+    if (missing.length) {
+      console.error("Missing env vars:", missing.join(", "));
+      return new Response(JSON.stringify({ error: "Server misconfiguration", missing }), {
+        status: 500,
+        headers: { "content-type": "application/json" },
+      });
     }
 
-    // parse request body
     const body = await req.json();
     const {
       fullName = "(no name)",
@@ -31,13 +24,12 @@ export async function POST(req) {
       email = "(no email)",
       phone = "(no phone)",
       message = "(no message)",
-    } = body;
+    } = body || {};
 
-    // Build message
     const msg = {
-      to: TO_EMAIL,                 // <- required
-      from: FROM_EMAIL,             // must be authenticated domain email
-      replyTo: email || undefined,
+      to: process.env.TO_EMAIL,
+      from: process.env.FROM_EMAIL,          // must be a verified sender / domain
+      reply_to: email,                       // use SendGrid's reply_to field name
       subject: `Quote Request from ${fullName}`,
       text: `Name: ${fullName}\nCompany: ${company}\nEmail: ${email}\nPhone: ${phone}\nMessage:\n${message}`,
       html: `
@@ -52,27 +44,27 @@ export async function POST(req) {
       `,
     };
 
-    // log lightweight debug
-    console.log("Attempting to send email with msg.to:", msg.to, "from:", msg.from);
-
-    // Attempt to send
     const result = await sgMail.send(msg);
-    console.log("SendGrid result:", result);
+    console.log("SendGrid result:", result); // server-side log
 
+    // Return success (don't leak internal SendGrid response in production)
     return new Response(JSON.stringify({ success: true }), {
       status: 200,
       headers: { "content-type": "application/json" },
     });
+
   } catch (error) {
-    // log full error to terminal (SendGrid errors may include response.body)
+    // Helpful server-side logging
     console.error("SendGrid error (full):", error);
     if (error.response && error.response.body) {
-      console.error("SendGrid response body:", error.response.body);
+      console.error("SendGrid response body:", JSON.stringify(error.response.body));
     }
-    // return helpful error to client
-    return new Response(
-      JSON.stringify({ error: "Email failed to send", details: error.message || String(error) }),
-      { status: 500, headers: { "content-type": "application/json" } }
-    );
+
+    // Return safe debug info (reduce in production)
+    const details = (error.response && error.response.body) || error.message || String(error);
+    return new Response(JSON.stringify({ error: "Email failed to send", details }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
   }
 }
